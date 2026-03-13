@@ -11,6 +11,18 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
   return {};
 }
 
+/** Fetch wrapper that includes auth headers. Use instead of raw fetch() in custom queryFn. */
+export async function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const authHeaders = await getAuthHeaders();
+  return fetch(`${API_BASE}${url}`, {
+    ...init,
+    headers: {
+      ...authHeaders,
+      ...init?.headers,
+    },
+  });
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;

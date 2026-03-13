@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { authFetch } from "@/lib/queryClient";
 import { PipelineTrigger } from "@/components/pipeline-trigger";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
@@ -16,7 +17,7 @@ export default function Pipelines() {
   const { data, isLoading } = useQuery<{ data: PipelineRun[]; total: number }>({
     queryKey: ["/api/pipelines", page],
     queryFn: async () => {
-      const res = await fetch(`/api/pipelines?page=${page}&limit=20`);
+      const res = await authFetch(`/api/pipelines?page=${page}&limit=20`);
       if (!res.ok) throw new Error("Failed to fetch pipelines");
       return res.json();
     },
@@ -26,7 +27,7 @@ export default function Pipelines() {
   const { data: detail } = useQuery<PipelineRun>({
     queryKey: ["/api/pipelines", selected?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/pipelines/${selected!.id}`);
+      const res = await authFetch(`/api/pipelines/${selected!.id}`);
       if (!res.ok) throw new Error("Failed");
       return res.json();
     },

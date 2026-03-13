@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { authFetch } from "@/lib/queryClient";
 import { DataTable } from "@/components/data-table";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,7 +25,7 @@ export default function Companies() {
   const { data, isLoading } = useQuery<{ data: Company[]; total: number }>({
     queryKey: ["/api/companies", params.toString()],
     queryFn: async () => {
-      const res = await fetch(`/api/companies?${params.toString()}`);
+      const res = await authFetch(`/api/companies?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch companies");
       return res.json();
     },
@@ -33,7 +34,7 @@ export default function Companies() {
   const { data: detail } = useQuery<Company>({
     queryKey: ["/api/companies", selected?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/companies/${selected!.id}`);
+      const res = await authFetch(`/api/companies/${selected!.id}`);
       if (!res.ok) throw new Error("Failed to fetch company");
       return res.json();
     },

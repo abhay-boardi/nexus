@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Search } from "lucide-react";
 import type { Person } from "@shared/schema";
+import { authFetch } from "@/lib/queryClient";
 
 export default function People() {
   const [search, setSearch] = useState("");
@@ -26,7 +27,7 @@ export default function People() {
   const { data, isLoading } = useQuery<{ data: Person[]; total: number }>({
     queryKey: ["/api/people", params.toString()],
     queryFn: async () => {
-      const res = await fetch(`/api/people?${params.toString()}`);
+      const res = await authFetch(`/api/people?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch people");
       return res.json();
     },
@@ -35,7 +36,7 @@ export default function People() {
   const { data: detail } = useQuery<Person>({
     queryKey: ["/api/people", selected?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/people/${selected!.id}`);
+      const res = await authFetch(`/api/people/${selected!.id}`);
       if (!res.ok) throw new Error("Failed to fetch person");
       return res.json();
     },

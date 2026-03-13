@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { authFetch } from "@/lib/queryClient";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Input } from "@/components/ui/input";
@@ -29,7 +30,7 @@ export default function Jobs() {
   const { data, isLoading } = useQuery<{ data: Job[]; total: number }>({
     queryKey: ["/api/jobs", params.toString()],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs?${params.toString()}`);
+      const res = await authFetch(`/api/jobs?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json();
     },
@@ -38,7 +39,7 @@ export default function Jobs() {
   const { data: jobDetail } = useQuery<Job>({
     queryKey: ["/api/jobs", selectedJob?.id],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs/${selectedJob!.id}`);
+      const res = await authFetch(`/api/jobs/${selectedJob!.id}`);
       if (!res.ok) throw new Error("Failed to fetch job");
       return res.json();
     },
