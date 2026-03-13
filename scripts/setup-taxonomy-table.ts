@@ -1,6 +1,10 @@
 import pg from "pg";
 
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpsZ3N0YnVjd2F3dW50YXRyZ3Z5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzM1MTUyOCwiZXhwIjoyMDg4OTI3NTI4fQ.QoaO1coiyPuseqWdIEwvsTIMtvUXM2Qngz79JwV_RgU";
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+if (!SERVICE_KEY) {
+  console.error("SUPABASE_SERVICE_KEY env var is required. Set it in .env");
+  process.exit(1);
+}
 
 async function main() {
   // Try multiple connection approaches
