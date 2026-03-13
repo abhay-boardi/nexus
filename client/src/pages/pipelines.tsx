@@ -143,7 +143,7 @@ export default function Pipelines() {
               { name: "company", label: "Company", type: "text", placeholder: "e.g. Google" },
               { name: "location", label: "Location", type: "text", placeholder: "e.g. Bangalore" },
               { name: "seniority", label: "Seniority", type: "select", options: [
-                { value: "", label: "Any" },
+                { value: "any", label: "Any" },
                 { value: "junior", label: "Junior" },
                 { value: "mid", label: "Mid-Level" },
                 { value: "senior", label: "Senior" },

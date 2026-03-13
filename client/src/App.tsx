@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { AuthProvider, useAuth } from "@/lib/auth";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import Jobs from "@/pages/jobs";
@@ -14,6 +15,8 @@ import People from "@/pages/people";
 import Pipelines from "@/pages/pipelines";
 import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
+import Login from "@/pages/login";
+import { Loader2 } from "lucide-react";
 
 function AppRouter() {
   return (
@@ -30,21 +33,43 @@ function AppRouter() {
   );
 }
 
+function AuthenticatedApp() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login />;
+  }
+
+  return (
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset>
+        <main className="flex-1 overflow-auto p-6">
+          <AppRouter />
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <Router hook={useHashLocation}>
-          <SidebarProvider>
-            <AppSidebar />
-            <SidebarInset>
-              <main className="flex-1 overflow-auto p-6">
-                <AppRouter />
-              </main>
-            </SidebarInset>
-          </SidebarProvider>
-        </Router>
+        <AuthProvider>
+          <Router hook={useHashLocation}>
+            <AuthenticatedApp />
+          </Router>
+        </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

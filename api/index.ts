@@ -8,6 +8,28 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 
+// Supabase client using anon key (for auth verification)
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
+
+async function verifyAuth(req: VercelRequest): Promise<{ authenticated: boolean; email?: string }> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return { authenticated: false };
+  }
+  const token = authHeader.substring(7);
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error || !user) return { authenticated: false };
+    // Only allow @boardinfinity.com emails
+    if (!user.email?.endsWith("@boardinfinity.com")) {
+      return { authenticated: false };
+    }
+    return { authenticated: true, email: user.email };
+  } catch {
+    return { authenticated: false };
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -20,6 +42,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const pathParam = req.query?.path;
   const pathFromQuery = Array.isArray(pathParam) ? pathParam.join("/") : pathParam;
   const path = pathFromQuery ? `/${pathFromQuery}` : (req.url?.replace(/^\/api\/index\.ts/, "").replace(/^\/api/, "").split("?")[0] || "/");
+
+  // Authenticate all requests
+  const auth = await verifyAuth(req);
+  if (!auth.authenticated) {
+    return res.status(401).json({ error: "Unauthorized. Please sign in with a @boardinfinity.com email." });
+  }
 
   try {
     // ==================== DASHBOARD ====================

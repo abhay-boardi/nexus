@@ -1,7 +1,7 @@
 import { useLocation, Link } from "wouter";
 import {
   LayoutDashboard, Briefcase, Building2, Users,
-  GitBranch, Activity, Settings, Database,
+  GitBranch, Activity, Settings, Database, LogOut,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/sidebar";
 import { useQuery } from "@tanstack/react-query";
 import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/auth";
 
 const navItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -23,6 +25,7 @@ const navItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const { user, signOut } = useAuth();
 
   const { data: credits } = useQuery<Array<{
     provider: string;
@@ -73,7 +76,7 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="px-4 pb-4">
+      <SidebarFooter className="px-4 pb-4 space-y-3">
         <div className="space-y-2">
           <div className="flex justify-between text-xs text-muted-foreground">
             <span>Credits Used</span>
@@ -84,6 +87,23 @@ export function AppSidebar() {
             {totalUsed.toLocaleString()} / {totalAllocated.toLocaleString()} this month
           </p>
         </div>
+        {user && (
+          <div className="flex items-center justify-between border-t pt-3">
+            <span className="text-[11px] text-muted-foreground truncate max-w-[140px]" title={user.email || ""}>
+              {user.email}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={signOut}
+              data-testid="btn-signout"
+              title="Sign out"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
       </SidebarFooter>
     </Sidebar>
   );
