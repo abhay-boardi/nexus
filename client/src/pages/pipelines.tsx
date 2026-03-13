@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
-import { Briefcase, Search, Building2, FileText } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck } from "lucide-react";
 import type { PipelineRun } from "@shared/schema";
 
 export default function Pipelines() {
@@ -43,68 +43,129 @@ export default function Pipelines() {
         <p className="text-sm text-muted-foreground">Configure and run data enrichment pipelines</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <PipelineTrigger
-          type="linkedin_jobs"
-          title="LinkedIn Jobs"
-          description="Scrape job listings from LinkedIn"
-          icon={Briefcase}
-          fields={[
-            { name: "search_keywords", label: "Keywords", type: "text", placeholder: "e.g. software engineer" },
-            { name: "location", label: "Location", type: "text", placeholder: "e.g. India", defaultValue: "India" },
-            { name: "date_posted", label: "Date Posted", type: "select", options: [
-              { value: "past month", label: "Past Month" },
-              { value: "past week", label: "Past Week" },
-              { value: "24hr", label: "Past 24 Hours" },
-            ], defaultValue: "past month" },
-            { name: "limit", label: "Limit", type: "number", placeholder: "100", defaultValue: "100" },
-          ]}
-        />
-        <PipelineTrigger
-          type="google_jobs"
-          title="Google Jobs"
-          description="Search jobs via Google Jobs API"
-          icon={Search}
-          fields={[
-            { name: "query", label: "Search Query", type: "text", placeholder: "e.g. data analyst in Mumbai" },
-            { name: "location", label: "Location", type: "text", placeholder: "e.g. Mumbai, India" },
-            { name: "date_posted", label: "Date Posted", type: "select", options: [
-              { value: "all", label: "Any Time" },
-              { value: "today", label: "Today" },
-              { value: "3days", label: "Past 3 Days" },
-              { value: "week", label: "Past Week" },
-              { value: "month", label: "Past Month" },
-            ], defaultValue: "month" },
-            { name: "num_pages", label: "Pages", type: "number", placeholder: "1", defaultValue: "1" },
-          ]}
-        />
-        <PipelineTrigger
-          type="company_enrichment"
-          title="Company Enrichment"
-          description="Enrich pending company profiles"
-          icon={Building2}
-          fields={[
-            { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
-            { name: "provider", label: "Provider", type: "select", options: [
-              { value: "apollo", label: "Apollo" },
-              { value: "proxycurl", label: "Proxycurl" },
-            ], defaultValue: "apollo" },
-          ]}
-        />
-        <PipelineTrigger
-          type="jd_enrichment"
-          title="JD Enrichment"
-          description="Extract skills from job descriptions"
-          icon={FileText}
-          fields={[
-            { name: "batch_size", label: "Batch Size", type: "number", placeholder: "100", defaultValue: "100" },
-            { name: "status_filter", label: "Status", type: "select", options: [
-              { value: "pending", label: "Pending Only" },
-              { value: "partial", label: "Partial" },
-              { value: "failed", label: "Failed (Retry)" },
-            ], defaultValue: "pending" },
-          ]}
-        />
+      {/* Job Pipelines */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Job Collection</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <PipelineTrigger
+            type="linkedin_jobs"
+            title="LinkedIn Jobs"
+            description="Collect job listings from LinkedIn"
+            icon={Briefcase}
+            fields={[
+              { name: "search_keywords", label: "Keywords", type: "text", placeholder: "e.g. software engineer" },
+              { name: "location", label: "Location", type: "text", placeholder: "e.g. India", defaultValue: "India" },
+              { name: "date_posted", label: "Date Posted", type: "select", options: [
+                { value: "past month", label: "Past Month" },
+                { value: "past week", label: "Past Week" },
+                { value: "24hr", label: "Past 24 Hours" },
+              ], defaultValue: "past month" },
+              { name: "limit", label: "Limit", type: "number", placeholder: "100", defaultValue: "100" },
+            ]}
+          />
+          <PipelineTrigger
+            type="google_jobs"
+            title="Google Jobs"
+            description="Search jobs via Google Jobs API"
+            icon={Search}
+            fields={[
+              { name: "query", label: "Search Query", type: "text", placeholder: "e.g. data analyst in Mumbai" },
+              { name: "location", label: "Location", type: "text", placeholder: "e.g. Mumbai, India" },
+              { name: "date_posted", label: "Date Posted", type: "select", options: [
+                { value: "all", label: "Any Time" },
+                { value: "today", label: "Today" },
+                { value: "3days", label: "Past 3 Days" },
+                { value: "week", label: "Past Week" },
+                { value: "month", label: "Past Month" },
+              ], defaultValue: "month" },
+              { name: "num_pages", label: "Pages", type: "number", placeholder: "1", defaultValue: "1" },
+            ]}
+          />
+          <PipelineTrigger
+            type="company_enrichment"
+            title="Company Enrichment"
+            description="Enrich pending company profiles"
+            icon={Building2}
+            fields={[
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
+              { name: "provider", label: "Provider", type: "select", options: [
+                { value: "apollo", label: "Apollo" },
+                { value: "proxycurl", label: "Proxycurl" },
+              ], defaultValue: "apollo" },
+            ]}
+          />
+          <PipelineTrigger
+            type="jd_enrichment"
+            title="JD Enrichment"
+            description="Extract skills from job descriptions"
+            icon={FileText}
+            fields={[
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "100", defaultValue: "100" },
+              { name: "status_filter", label: "Status", type: "select", options: [
+                { value: "pending", label: "Pending Only" },
+                { value: "partial", label: "Partial" },
+                { value: "failed", label: "Failed (Retry)" },
+              ], defaultValue: "pending" },
+            ]}
+          />
+        </div>
+      </div>
+
+      {/* People & Alumni Pipelines */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">People & Alumni</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <PipelineTrigger
+            type="alumni"
+            title="Alumni Search"
+            description="Find university alumni via LinkedIn"
+            icon={GraduationCap}
+            fields={[
+              { name: "university_slug", label: "University Slug(s)", type: "text", placeholder: "e.g. iit-bombay, iit-delhi" },
+              { name: "university_name", label: "Display Name", type: "text", placeholder: "e.g. IIT Bombay" },
+              { name: "keywords", label: "Keywords (Optional)", type: "text", placeholder: "e.g. engineering" },
+              { name: "job_title", label: "Current Title (Optional)", type: "text", placeholder: "e.g. Software Engineer" },
+              { name: "location", label: "Location (Optional)", type: "text", placeholder: "e.g. India" },
+              { name: "pages", label: "Pages to Fetch", type: "number", placeholder: "5", defaultValue: "5" },
+            ]}
+          />
+          <PipelineTrigger
+            type="people_enrichment"
+            title="People Search"
+            description="Search for people by title, company, location (Apollo stub)"
+            icon={Users}
+            fields={[
+              { name: "mode", label: "Mode", type: "select", options: [
+                { value: "search", label: "Search (find new people)" },
+                { value: "enrich", label: "Enrich (existing people)" },
+              ], defaultValue: "search" },
+              { name: "job_title", label: "Job Title", type: "text", placeholder: "e.g. Software Engineer" },
+              { name: "company", label: "Company", type: "text", placeholder: "e.g. Google" },
+              { name: "location", label: "Location", type: "text", placeholder: "e.g. Bangalore" },
+              { name: "seniority", label: "Seniority", type: "select", options: [
+                { value: "", label: "Any" },
+                { value: "junior", label: "Junior" },
+                { value: "mid", label: "Mid-Level" },
+                { value: "senior", label: "Senior" },
+                { value: "lead", label: "Lead" },
+                { value: "director", label: "Director+" },
+              ] },
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
+            ]}
+          />
+          <PipelineTrigger
+            type="people_enrichment"
+            title="People Enrich"
+            description="Enrich existing people with detailed profiles (Apollo stub)"
+            icon={UserCheck}
+            fields={[
+              { name: "mode", label: "Mode", type: "select", options: [
+                { value: "enrich", label: "Enrich (existing people)" },
+              ], defaultValue: "enrich" },
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
+            ]}
+          />
+        </div>
       </div>
 
       <Card>

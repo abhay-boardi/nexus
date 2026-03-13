@@ -51,8 +51,8 @@ export function PipelineTrigger({ type, title, description, icon: Icon, fields }
       queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/pipeline-activity"] });
 
-      // Poll for completion if it's a linkedin_jobs pipeline (async provider)
-      if (type === "linkedin_jobs" && data?.id) {
+      // Poll for completion if it's an async pipeline (Apify-backed)
+      if ((type === "linkedin_jobs" || type === "alumni") && data?.id) {
         setPolling(true);
         let attempts = 0;
         const maxAttempts = 60; // 5 min at 5s intervals
@@ -63,10 +63,13 @@ export function PipelineTrigger({ type, title, description, icon: Icon, fields }
             const pollRes = await apiRequest("POST", `/api/pipelines/${data.id}/poll`);
             const pollData = await pollRes.json();
             if (pollData.status === "completed") {
-              toast({ title: "Pipeline completed", description: `Processed ${pollData.processed_items} jobs (${pollData.skipped_items} duplicates skipped).` });
+              const entityLabel = type === "alumni" ? "profiles" : "jobs";
+              toast({ title: "Pipeline completed", description: `Processed ${pollData.processed_items} ${entityLabel} (${pollData.skipped_items || 0} duplicates skipped).` });
               queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
               queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
               queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/people"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/alumni"] });
               break;
             } else if (pollData.status === "failed") {
               toast({ title: "Pipeline failed", description: pollData.error_message || "Unknown error", variant: "destructive" });

@@ -194,6 +194,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         providerDatasetId = apifyData.data?.defaultDatasetId;
       }
 
+      // Alumni pipeline: Apify LinkedIn profile search by university
+      if (pipeline_type === "alumni") {
+        if (!APIFY_API_KEY) return res.status(400).json({ error: "Apify API key not configured" });
+        const actorInput: Record<string, any> = {
+          schoolUrls: (config?.university_slug || "iit-bombay").split(",").map((s: string) => s.trim()),
+          profileScraperMode: "Full",
+          startPage: 1,
+          takePages: parseInt(config?.pages) || 5,
+        };
+        if (config?.keywords) actorInput.searchQuery = config.keywords;
+        if (config?.location) actorInput.locations = [config.location];
+        if (config?.job_title) actorInput.currentJobTitles = [config.job_title];
+
+        const startRes = await fetch(
+          `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+        );
+        if (!startRes.ok) {
+          const errText = await startRes.text();
+          return res.status(500).json({ error: `Apify alumni start failed: ${errText}` });
+        }
+        const apifyData = await startRes.json();
+        providerRunId = apifyData.data?.id;
+        providerDatasetId = apifyData.data?.defaultDatasetId;
+      }
+
       // Create pipeline run with provider tracking info
       const { data: run, error } = await supabase
         .from("pipeline_runs")
@@ -210,9 +236,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (error) return res.status(500).json({ error: error.message });
 
-      // For non-external pipelines (company_enrichment, jd_enrichment), execute synchronously
-      if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment") {
-        executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      // For non-external pipelines (company_enrichment, jd_enrichment, people_search, people_enrich), execute synchronously
+      if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment" || pipeline_type === "people_enrichment") {
+        await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
       }
 
       // For Google Jobs, execute synchronously (fast RapidAPI call)
@@ -233,10 +259,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const providerRunId = run.config?._provider_run_id;
       const providerDatasetId = run.config?._provider_dataset_id;
 
-      if (run.pipeline_type === "linkedin_jobs" && providerRunId) {
+      // Determine which Apify actor to poll based on pipeline type
+      const actorMap: Record<string, string> = {
+        linkedin_jobs: "practicaltools~linkedin-jobs",
+        alumni: "harvestapi~linkedin-profile-search",
+      };
+      const actorSlug = actorMap[run.pipeline_type];
+
+      if (actorSlug && providerRunId) {
         // Check Apify run status
         const pollRes = await fetch(
-          `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs/${providerRunId}?token=${APIFY_API_KEY}`
+          `https://api.apify.com/v2/acts/${actorSlug}/runs/${providerRunId}?token=${APIFY_API_KEY}`
         );
         const pollData = await pollRes.json();
         const apifyStatus = pollData.data?.status;
@@ -256,7 +289,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         // Apify SUCCEEDED — fetch and process results
         const dsId = providerDatasetId || pollData.data?.defaultDatasetId;
-        await processLinkedInResults(id, dsId, run.config);
+        if (run.pipeline_type === "linkedin_jobs") {
+          await processLinkedInResults(id, dsId, run.config);
+        } else if (run.pipeline_type === "alumni") {
+          await processAlumniResults(id, dsId, run.config);
+        }
         const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
         return res.json(updated);
       }
@@ -344,6 +381,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // ==================== ALUMNI ====================
+    if (path.match(/^\/alumni\/?$/) && req.method === "GET") {
+      const { search, university_name, graduation_year, page = "1", limit = "50" } = req.query as Record<string, string>;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let query = supabase
+        .from("alumni")
+        .select(`
+          id, university_name, university_id, degree, field_of_study, graduation_year, start_year, current_status, created_at,
+          person:people!alumni_person_id_fkey(id, full_name, first_name, last_name, email, linkedin_url, current_title, location_city, location_country)
+        `, { count: "exact" });
+
+      if (university_name) query = query.ilike("university_name", `%${university_name}%`);
+      if (graduation_year) query = query.eq("graduation_year", parseInt(graduation_year));
+
+      const { data, error, count } = await query
+        .order("created_at", { ascending: false })
+        .range(offset, offset + parseInt(limit) - 1);
+
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ data: data || [], total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
@@ -355,8 +415,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 async function executePipeline(runId: string, pipelineType: string, config: any) {
   try {
-    if (pipelineType === "linkedin_jobs") {
-      // LinkedIn jobs are handled by the run/poll endpoints, not here
+    if (pipelineType === "linkedin_jobs" || pipelineType === "alumni") {
+      // These are handled by the run/poll endpoints, not here
       return;
     } else if (pipelineType === "google_jobs") {
       await executeGoogleJobs(runId, config);
@@ -364,6 +424,8 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
       await executeCompanyEnrichment(runId, config);
     } else if (pipelineType === "jd_enrichment") {
       await executeJDEnrichment(runId, config);
+    } else if (pipelineType === "people_enrichment") {
+      await executePeopleEnrichment(runId, config);
     }
   } catch (err: any) {
     await supabase.from("pipeline_runs").update({
@@ -708,6 +770,328 @@ async function executeJDEnrichment(runId: string, config: any) {
   }).eq("id", runId);
 }
 
+// Process Alumni results from Apify dataset (called by /poll endpoint)
+async function processAlumniResults(runId: string, datasetId: string, config: any) {
+  const resultsRes = await fetch(
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=2500`
+  );
+  const profiles: any[] = await resultsRes.json();
+
+  let processed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  await supabase.from("pipeline_runs").update({ total_items: profiles.length }).eq("id", runId);
+
+  const universityName = config?.university_name || config?.university_slug || "Unknown University";
+
+  for (const profile of profiles) {
+    try {
+      const linkedinUrl = profile.linkedinUrl || profile.profileUrl || null;
+      const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(" ") || profile.fullName || "Unknown";
+
+      // Check for duplicate person by LinkedIn URL
+      if (linkedinUrl) {
+        const { data: existing } = await supabase
+          .from("people")
+          .select("id")
+          .eq("linkedin_url", linkedinUrl)
+          .maybeSingle();
+
+        if (existing) {
+          // Person exists — just ensure alumni record exists
+          const { data: existingAlumni } = await supabase
+            .from("alumni")
+            .select("id")
+            .eq("person_id", existing.id)
+            .ilike("university_name", `%${universityName.split("-").join("%")}%`)
+            .maybeSingle();
+
+          if (!existingAlumni) {
+            // Extract education for this university
+            const eduEntry = findEducationEntry(profile.education, universityName);
+            await supabase.from("alumni").insert({
+              person_id: existing.id,
+              university_name: eduEntry?.schoolName || formatUniversityName(universityName),
+              degree: eduEntry?.degree || null,
+              field_of_study: eduEntry?.fieldOfStudy || null,
+              graduation_year: eduEntry?.endYear || null,
+              start_year: eduEntry?.startYear || null,
+              current_status: profile.headline || "unknown",
+            });
+            processed++;
+          } else {
+            skipped++;
+          }
+          continue;
+        }
+      }
+
+      // Resolve company if current experience exists
+      let companyId = null;
+      const currentExp = Array.isArray(profile.experience) ? profile.experience[0] : null;
+      if (currentExp?.companyName) {
+        const { data: existingCompany } = await supabase
+          .from("companies")
+          .select("id")
+          .eq("name", currentExp.companyName)
+          .maybeSingle();
+        if (existingCompany) {
+          companyId = existingCompany.id;
+        } else {
+          const { data: newCompany } = await supabase
+            .from("companies")
+            .insert({
+              name: currentExp.companyName,
+              linkedin_url: currentExp.companyUrl || null,
+              enrichment_status: "pending",
+            })
+            .select("id")
+            .maybeSingle();
+          companyId = newCompany?.id;
+        }
+      }
+
+      // Insert person
+      const locationObj = profile.location || {};
+      const { data: newPerson, error: personError } = await supabase
+        .from("people")
+        .insert({
+          full_name: fullName,
+          first_name: profile.firstName || null,
+          last_name: profile.lastName || null,
+          email: profile.email || null,
+          linkedin_url: linkedinUrl,
+          current_title: profile.headline || currentExp?.title || null,
+          current_company_id: companyId,
+          location_city: locationObj.city || null,
+          location_state: locationObj.state || null,
+          location_country: locationObj.country || locationObj.countryCode || null,
+          bio: profile.about || profile.summary || null,
+          skills: Array.isArray(profile.skills) ? profile.skills.map((s: any) => typeof s === "string" ? s : s.name || s.skill || "").filter(Boolean) : [],
+          experience: Array.isArray(profile.experience) ? profile.experience : [],
+          education: Array.isArray(profile.education) ? profile.education : [],
+          network_size: profile.connectionsCount || null,
+          audience_size: profile.followerCount || null,
+          enrichment_status: "complete",
+          enrichment_score: 80,
+          enrichment_sources: { apify_alumni: true },
+          raw_data: profile,
+        })
+        .select("id")
+        .maybeSingle();
+
+      if (personError || !newPerson) {
+        failed++;
+        continue;
+      }
+
+      // Insert alumni record
+      const eduEntry = findEducationEntry(profile.education, universityName);
+      await supabase.from("alumni").insert({
+        person_id: newPerson.id,
+        university_name: eduEntry?.schoolName || formatUniversityName(universityName),
+        degree: eduEntry?.degree || null,
+        field_of_study: eduEntry?.fieldOfStudy || null,
+        graduation_year: eduEntry?.endYear || null,
+        start_year: eduEntry?.startYear || null,
+        current_status: profile.headline || "unknown",
+      });
+
+      processed++;
+    } catch (e) {
+      failed++;
+    }
+
+    if ((processed + failed + skipped) % 10 === 0) {
+      await supabase.from("pipeline_runs").update({
+        processed_items: processed,
+        failed_items: failed,
+        skipped_items: skipped,
+      }).eq("id", runId);
+    }
+  }
+
+  // Update credits
+  const currentMonth = new Date().toISOString().slice(0, 7) + "-01";
+  await supabase.rpc("increment_credits_used", { p_provider: "apify", p_month: currentMonth, p_amount: profiles.length });
+
+  await supabase.from("pipeline_runs").update({
+    status: "completed",
+    processed_items: processed,
+    failed_items: failed,
+    skipped_items: skipped,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+}
+
+// People Enrichment pipeline (Apollo API stub)
+async function executePeopleEnrichment(runId: string, config: any) {
+  const mode = config?.mode || "search"; // "search" or "enrich"
+  const batchSize = parseInt(config?.batch_size) || 50;
+
+  if (mode === "search") {
+    // Apollo People Search API stub
+    // In production: POST https://api.apollo.io/api/v1/mixed_people/search
+    // with person_titles, person_locations, organization_ids, etc.
+    const searchParams = {
+      job_title: config?.job_title || "",
+      location: config?.location || "",
+      company: config?.company || "",
+      seniority: config?.seniority || "",
+      limit: batchSize,
+    };
+
+    // Stub: generate sample results to demonstrate the pipeline
+    const stubResults = generatePeopleSearchStub(searchParams, batchSize);
+    await supabase.from("pipeline_runs").update({ total_items: stubResults.length }).eq("id", runId);
+
+    let processed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const person of stubResults) {
+      try {
+        // Check for duplicate by email or LinkedIn URL
+        if (person.email) {
+          const { data: existing } = await supabase
+            .from("people")
+            .select("id")
+            .eq("email", person.email)
+            .maybeSingle();
+          if (existing) { skipped++; continue; }
+        }
+
+        let companyId = null;
+        if (person.company_name) {
+          const { data: existingCompany } = await supabase
+            .from("companies")
+            .select("id")
+            .eq("name", person.company_name)
+            .maybeSingle();
+          if (existingCompany) {
+            companyId = existingCompany.id;
+          } else {
+            const { data: newCompany } = await supabase
+              .from("companies")
+              .insert({
+                name: person.company_name,
+                domain: person.company_domain || null,
+                enrichment_status: "pending",
+              })
+              .select("id")
+              .maybeSingle();
+            companyId = newCompany?.id;
+          }
+        }
+
+        await supabase.from("people").insert({
+          full_name: person.full_name,
+          first_name: person.first_name,
+          last_name: person.last_name,
+          email: person.email || null,
+          linkedin_url: person.linkedin_url || null,
+          current_title: person.title || null,
+          current_company_id: companyId,
+          seniority: mapPersonSeniority(person.seniority),
+          function: mapPersonFunction(person.department),
+          location_city: person.city || null,
+          location_country: person.country || null,
+          enrichment_status: "partial",
+          enrichment_score: 40,
+          enrichment_sources: { apollo_search_stub: true },
+          raw_data: person,
+        });
+        processed++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    await supabase.from("enrichment_logs").insert({
+      entity_type: "person",
+      entity_id: runId,
+      provider: "apollo",
+      operation: "people_search",
+      status: "success",
+      credits_used: processed,
+    });
+
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      processed_items: processed,
+      failed_items: failed,
+      skipped_items: skipped,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+
+  } else if (mode === "enrich") {
+    // Apollo People Enrich API stub
+    // In production: POST https://api.apollo.io/api/v1/people/match
+    // with email, linkedin_url, first_name, last_name, organization_name
+    const { data: people, error } = await supabase
+      .from("people")
+      .select("id, full_name, email, linkedin_url, current_title")
+      .in("enrichment_status", ["pending", "partial"])
+      .limit(batchSize);
+
+    if (error) throw error;
+    if (!people?.length) {
+      await supabase.from("pipeline_runs").update({
+        status: "completed",
+        total_items: 0,
+        completed_at: new Date().toISOString(),
+      }).eq("id", runId);
+      return;
+    }
+
+    await supabase.from("pipeline_runs").update({ total_items: people.length }).eq("id", runId);
+
+    let processed = 0;
+    let failed = 0;
+
+    for (const person of people) {
+      try {
+        // Stub enrichment: In production, call Apollo enrich API and merge data
+        // For now, mark as enriched with stub data
+        const enrichedData = {
+          phone: null, // Would come from Apollo
+          bio: "[Stub] Enrichment data would come from Apollo API",
+          skills: ["Leadership", "Strategy"],
+        };
+
+        await supabase.from("people").update({
+          bio: enrichedData.bio,
+          skills: enrichedData.skills,
+          enrichment_status: "partial",
+          enrichment_score: 50,
+          enrichment_sources: { apollo_enrich_stub: true },
+        }).eq("id", person.id);
+
+        processed++;
+      } catch (e) {
+        failed++;
+      }
+    }
+
+    await supabase.from("enrichment_logs").insert({
+      entity_type: "person",
+      entity_id: runId,
+      provider: "apollo",
+      operation: "people_enrich",
+      status: "success",
+      credits_used: processed,
+    });
+
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      processed_items: processed,
+      failed_items: failed,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+  }
+}
+
 // ==================== HELPERS ====================
 
 function mapEmploymentType(raw: string | null): string | null {
@@ -732,6 +1116,89 @@ function mapSeniority(raw: string | null): string | null {
   if (lower.includes("vp") || lower.includes("vice")) return "vp";
   if (lower.includes("cto") || lower.includes("ceo") || lower.includes("chief") || lower.includes("c-suite")) return "c_suite";
   return "other";
+}
+
+function findEducationEntry(education: any[], universitySlug: string): any | null {
+  if (!Array.isArray(education) || !education.length) return null;
+  const slugParts = universitySlug.toLowerCase().split("-").filter(Boolean);
+  for (const edu of education) {
+    const schoolName = (edu.schoolName || edu.school || edu.institution || "").toLowerCase();
+    // Match if most slug parts appear in the school name
+    const matchCount = slugParts.filter(part => schoolName.includes(part)).length;
+    if (matchCount >= Math.ceil(slugParts.length * 0.6)) return edu;
+  }
+  return education[0]; // Fallback to first education entry
+}
+
+function formatUniversityName(slug: string): string {
+  return slug.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+function mapPersonSeniority(raw: string | null | undefined): string {
+  if (!raw) return "unknown";
+  const lower = raw.toLowerCase();
+  if (lower.includes("intern")) return "intern";
+  if (lower.includes("entry") || lower.includes("junior")) return "entry";
+  if (lower.includes("associate")) return "associate";
+  if (lower.includes("senior") || lower.includes("mid") || lower.includes("lead")) return "mid_senior";
+  if (lower.includes("director")) return "director";
+  if (lower.includes("vp") || lower.includes("vice")) return "vp";
+  if (lower.includes("chief") || lower.includes("cto") || lower.includes("ceo") || lower.includes("cfo")) return "c_suite";
+  return "unknown";
+}
+
+function mapPersonFunction(raw: string | null | undefined): string {
+  if (!raw) return "other";
+  const lower = raw.toLowerCase();
+  if (lower.includes("engineer") || lower.includes("develop") || lower.includes("tech")) return "engineering";
+  if (lower.includes("sale")) return "sales";
+  if (lower.includes("market")) return "marketing";
+  if (lower.includes("hr") || lower.includes("human") || lower.includes("recruit") || lower.includes("talent")) return "hr";
+  if (lower.includes("financ") || lower.includes("account")) return "finance";
+  if (lower.includes("operat")) return "operations";
+  if (lower.includes("product")) return "product";
+  if (lower.includes("design")) return "design";
+  if (lower.includes("data") || lower.includes("analyt")) return "data";
+  if (lower.includes("legal")) return "legal";
+  if (lower.includes("consult")) return "consulting";
+  if (lower.includes("educ") || lower.includes("teach")) return "education";
+  if (lower.includes("health") || lower.includes("medical")) return "healthcare";
+  return "other";
+}
+
+function generatePeopleSearchStub(params: any, count: number): any[] {
+  // Stub data generator for People Search
+  // In production, this would be replaced by Apollo API call
+  const titles = ["Software Engineer", "Product Manager", "Data Scientist", "Marketing Manager", "Sales Director"];
+  const companies = ["Google", "Microsoft", "Amazon", "Meta", "Apple", "Flipkart", "Infosys", "TCS"];
+  const cities = ["Mumbai", "Bangalore", "Delhi", "Hyderabad", "Pune", "Chennai"];
+  const seniorities = ["junior", "mid", "senior", "lead", "director"];
+  const departments = ["Engineering", "Sales", "Marketing", "Product", "HR", "Data"];
+  const firstNames = ["Rahul", "Priya", "Amit", "Sneha", "Vikram", "Ananya", "Karan", "Neha", "Arjun", "Divya"];
+  const lastNames = ["Sharma", "Patel", "Gupta", "Singh", "Kumar", "Reddy", "Jain", "Verma", "Mehta", "Das"];
+
+  const results: any[] = [];
+  const usedCount = Math.min(count, 10); // Cap stub at 10
+  for (let i = 0; i < usedCount; i++) {
+    const firstName = firstNames[i % firstNames.length];
+    const lastName = lastNames[i % lastNames.length];
+    results.push({
+      full_name: `${firstName} ${lastName}`,
+      first_name: firstName,
+      last_name: lastName,
+      email: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@example.com`,
+      linkedin_url: `https://linkedin.com/in/${firstName.toLowerCase()}-${lastName.toLowerCase()}-stub`,
+      title: params.job_title || titles[i % titles.length],
+      company_name: params.company || companies[i % companies.length],
+      company_domain: null,
+      city: params.location || cities[i % cities.length],
+      country: "India",
+      seniority: params.seniority || seniorities[i % seniorities.length],
+      department: departments[i % departments.length],
+      _stub: true,
+    });
+  }
+  return results;
 }
 
 const TECH_SKILLS = ["python", "javascript", "typescript", "java", "react", "node.js", "nodejs", "angular", "vue", "sql", "postgresql", "mongodb", "aws", "azure", "gcp", "docker", "kubernetes", "git", "linux", "html", "css", "c++", "c#", "ruby", "go", "rust", "swift", "kotlin", "php", "r", "scala", "tensorflow", "pytorch", "machine learning", "deep learning", "ai", "data science", "data analysis", "tableau", "power bi", "excel", "figma", "sketch", "jira", "agile", "scrum", "rest api", "graphql", "microservices", "ci/cd", "devops", "jenkins", "terraform", "redis", "elasticsearch", "kafka", "spark", "hadoop", "snowflake", "dbt", "airflow"];
