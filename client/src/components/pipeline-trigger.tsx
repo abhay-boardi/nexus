@@ -36,6 +36,8 @@ export function PipelineTrigger({ type, title, description, icon: Icon, fields }
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  const [polling, setPolling] = useState(false);
+
   const mutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/pipelines/run", {
@@ -44,10 +46,39 @@ export function PipelineTrigger({ type, title, description, icon: Icon, fields }
       });
       return res.json();
     },
-    onSuccess: () => {
-      toast({ title: "Pipeline started", description: `${title} pipeline has been triggered.` });
+    onSuccess: async (data: any) => {
+      toast({ title: "Pipeline started", description: `${title} pipeline has been triggered. Waiting for results...` });
       queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard/pipeline-activity"] });
+
+      // Poll for completion if it's a linkedin_jobs pipeline (async provider)
+      if (type === "linkedin_jobs" && data?.id) {
+        setPolling(true);
+        let attempts = 0;
+        const maxAttempts = 60; // 5 min at 5s intervals
+        while (attempts < maxAttempts) {
+          await new Promise(r => setTimeout(r, 5000));
+          attempts++;
+          try {
+            const pollRes = await apiRequest("POST", `/api/pipelines/${data.id}/poll`);
+            const pollData = await pollRes.json();
+            if (pollData.status === "completed") {
+              toast({ title: "Pipeline completed", description: `Processed ${pollData.processed_items} jobs (${pollData.skipped_items} duplicates skipped).` });
+              queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+              break;
+            } else if (pollData.status === "failed") {
+              toast({ title: "Pipeline failed", description: pollData.error_message || "Unknown error", variant: "destructive" });
+              break;
+            }
+          } catch { break; }
+        }
+        setPolling(false);
+        queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/dashboard/pipeline-activity"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/dashboard/stats"] });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Failed to start pipeline", description: err.message, variant: "destructive" });
@@ -100,15 +131,15 @@ export function PipelineTrigger({ type, title, description, icon: Icon, fields }
         <Button
           className="w-full h-8 text-xs"
           onClick={() => mutation.mutate()}
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || polling}
           data-testid={`run-${type}`}
         >
-          {mutation.isPending ? (
+          {(mutation.isPending || polling) ? (
             <Loader2 className="h-3 w-3 animate-spin mr-1" />
           ) : (
             <Play className="h-3 w-3 mr-1" />
           )}
-          Run Pipeline
+          {polling ? "Processing..." : "Run Pipeline"}
         </Button>
       </CardContent>
     </Card>

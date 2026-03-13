@@ -165,13 +165,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { pipeline_type, config } = req.body || {};
       if (!pipeline_type) return res.status(400).json({ error: "pipeline_type is required" });
 
-      // Create pipeline run
+      // For LinkedIn/Google jobs: start the external provider run and store run ID
+      // Processing happens via the /poll endpoint (separate request)
+      let providerRunId: string | null = null;
+      let providerDatasetId: string | null = null;
+
+      if (pipeline_type === "linkedin_jobs") {
+        if (!APIFY_API_KEY) return res.status(400).json({ error: "Apify API key not configured" });
+        const timePostedMap: Record<string, string> = { past_24h: "r86400", past_week: "r604800", past_month: "r2592000" };
+        const actorInput: Record<string, any> = {
+          keywords: config?.keywords || "software engineer",
+          location: config?.location || "India",
+          maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
+        };
+        if (config?.date_posted && timePostedMap[config.date_posted]) {
+          actorInput.timePosted = timePostedMap[config.date_posted];
+        }
+        const startRes = await fetch(
+          `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+        );
+        if (!startRes.ok) {
+          const errText = await startRes.text();
+          return res.status(500).json({ error: `Apify start failed: ${errText}` });
+        }
+        const apifyData = await startRes.json();
+        providerRunId = apifyData.data?.id;
+        providerDatasetId = apifyData.data?.defaultDatasetId;
+      }
+
+      // Create pipeline run with provider tracking info
       const { data: run, error } = await supabase
         .from("pipeline_runs")
         .insert({
           pipeline_type,
           trigger_type: "manual",
-          config: config || {},
+          config: { ...(config || {}), _provider_run_id: providerRunId, _provider_dataset_id: providerDatasetId },
           status: "running",
           started_at: new Date().toISOString(),
           triggered_by: "dashboard",
@@ -181,8 +210,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (error) return res.status(500).json({ error: error.message });
 
-      // Execute pipeline asynchronously (fire and forget for Vercel)
-      executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      // For non-external pipelines (company_enrichment, jd_enrichment), execute synchronously
+      if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment") {
+        executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      }
+
+      // For Google Jobs, execute synchronously (fast RapidAPI call)
+      if (pipeline_type === "google_jobs") {
+        await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      }
+
+      return res.json(run);
+    }
+
+    // Poll pipeline status and process results when ready
+    if (path.match(/^\/pipelines\/[^/]+\/poll$/) && req.method === "POST") {
+      const id = path.split("/")[2];
+      const { data: run, error } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
+      if (error || !run) return res.status(404).json({ error: "Pipeline run not found" });
+      if (run.status !== "running") return res.json(run); // Already completed/failed
+
+      const providerRunId = run.config?._provider_run_id;
+      const providerDatasetId = run.config?._provider_dataset_id;
+
+      if (run.pipeline_type === "linkedin_jobs" && providerRunId) {
+        // Check Apify run status
+        const pollRes = await fetch(
+          `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs/${providerRunId}?token=${APIFY_API_KEY}`
+        );
+        const pollData = await pollRes.json();
+        const apifyStatus = pollData.data?.status;
+
+        if (apifyStatus === "RUNNING" || apifyStatus === "READY") {
+          return res.json({ ...run, _apify_status: apifyStatus });
+        }
+
+        if (apifyStatus !== "SUCCEEDED") {
+          await supabase.from("pipeline_runs").update({
+            status: "failed",
+            error_message: `Apify run status: ${apifyStatus}`,
+            completed_at: new Date().toISOString(),
+          }).eq("id", id);
+          return res.json({ ...run, status: "failed", error_message: `Apify run status: ${apifyStatus}` });
+        }
+
+        // Apify SUCCEEDED — fetch and process results
+        const dsId = providerDatasetId || pollData.data?.defaultDatasetId;
+        await processLinkedInResults(id, dsId, run.config);
+        const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
+        return res.json(updated);
+      }
 
       return res.json(run);
     }
@@ -279,7 +356,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 async function executePipeline(runId: string, pipelineType: string, config: any) {
   try {
     if (pipelineType === "linkedin_jobs") {
-      await executeLinkedInJobs(runId, config);
+      // LinkedIn jobs are handled by the run/poll endpoints, not here
+      return;
     } else if (pipelineType === "google_jobs") {
       await executeGoogleJobs(runId, config);
     } else if (pipelineType === "company_enrichment") {
@@ -296,65 +374,9 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
   }
 }
 
-async function executeLinkedInJobs(runId: string, config: any) {
-  if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
-
-  // Map date_posted to Apify's timePosted format
-  const timePostedMap: Record<string, string> = {
-    "past_24h": "r86400",
-    "past_week": "r604800",
-    "past_month": "r2592000",
-    "any": "",
-  };
-  const actorInput: Record<string, any> = {
-    keywords: config.keywords || "software engineer",
-    location: config.location || "India",
-    maxPages: Math.ceil((parseInt(config.limit) || 100) / 10),
-  };
-  if (config.date_posted && timePostedMap[config.date_posted]) {
-    actorInput.timePosted = timePostedMap[config.date_posted];
-  }
-
-  // Start Apify actor run with waitForFinish (up to 240s to stay within Vercel's 300s limit)
-  const startRes = await fetch(
-    `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}&waitForFinish=240`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(actorInput),
-    }
-  );
-
-  if (!startRes.ok) {
-    const errText = await startRes.text();
-    throw new Error(`Apify start failed: ${errText}`);
-  }
-
-  const runData = await startRes.json();
-  const apifyRunId = runData.data?.id;
-  const apifyStatus = runData.data?.status;
-  if (!apifyRunId) throw new Error("No run ID returned from Apify");
-
-  // Log the enrichment call
-  await supabase.from("enrichment_logs").insert({
-    entity_type: "job",
-    entity_id: runId,
-    provider: "apify",
-    operation: "linkedin_jobs_scrape",
-    status: "success",
-    credits_used: parseInt(config.limit) || 100,
-  });
-
-  if (apifyStatus !== "SUCCEEDED") {
-    await supabase.from("pipeline_runs").update({
-      status: apifyStatus === "RUNNING" ? "running" : "failed",
-      error_message: apifyStatus === "RUNNING" ? "Still running on Apify - check back later" : `Apify run status: ${apifyStatus}`,
-    }).eq("id", runId);
-    return;
-  }
-
-  // Fetch results
-  const datasetId = runData.data?.defaultDatasetId;
+// Process LinkedIn job results from Apify dataset (called by /poll endpoint)
+async function processLinkedInResults(runId: string, datasetId: string, config: any) {
+  // Fetch results from Apify dataset
   const resultsRes = await fetch(
     `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=1000`
   );
