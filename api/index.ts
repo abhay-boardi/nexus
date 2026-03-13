@@ -315,9 +315,9 @@ async function executeLinkedInJobs(runId: string, config: any) {
     actorInput.timePosted = timePostedMap[config.date_posted];
   }
 
-  // Start Apify actor run
+  // Start Apify actor run with waitForFinish (up to 240s to stay within Vercel's 300s limit)
   const startRes = await fetch(
-    `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
+    `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}&waitForFinish=240`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -332,6 +332,7 @@ async function executeLinkedInJobs(runId: string, config: any) {
 
   const runData = await startRes.json();
   const apifyRunId = runData.data?.id;
+  const apifyStatus = runData.data?.status;
   if (!apifyRunId) throw new Error("No run ID returned from Apify");
 
   // Log the enrichment call
@@ -344,26 +345,10 @@ async function executeLinkedInJobs(runId: string, config: any) {
     credits_used: parseInt(config.limit) || 100,
   });
 
-  // Poll for completion (max 5 minutes for serverless)
-  let attempts = 0;
-  const maxAttempts = 30;
-  let status = "RUNNING";
-
-  while (status === "RUNNING" && attempts < maxAttempts) {
-    await new Promise(resolve => setTimeout(resolve, 10000)); // 10s intervals
-    attempts++;
-
-    const pollRes = await fetch(
-      `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs/${apifyRunId}?token=${APIFY_API_KEY}`
-    );
-    const pollData = await pollRes.json();
-    status = pollData.data?.status || "RUNNING";
-  }
-
-  if (status !== "SUCCEEDED") {
+  if (apifyStatus !== "SUCCEEDED") {
     await supabase.from("pipeline_runs").update({
-      status: status === "RUNNING" ? "running" : "failed",
-      error_message: status === "RUNNING" ? "Still running on Apify - check back later" : `Apify run status: ${status}`,
+      status: apifyStatus === "RUNNING" ? "running" : "failed",
+      error_message: apifyStatus === "RUNNING" ? "Still running on Apify - check back later" : `Apify run status: ${apifyStatus}`,
     }).eq("id", runId);
     return;
   }
