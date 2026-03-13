@@ -137,6 +137,9 @@ export default function JDAnalyzer() {
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Note: Scraped jobs may not have full descriptions. If analysis fails, switch to "Paste JD Text" and paste the description manually.
+                </p>
               </div>
             )}
 

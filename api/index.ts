@@ -524,14 +524,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!jdText && job_id) {
         const { data: job } = await supabase
           .from("jobs")
-          .select("description")
+          .select("description, title, company_name, location_raw, employment_type, seniority_level, functions, raw_data")
           .eq("id", job_id)
           .single();
-        jdText = job?.description;
+        
+        if (job?.description) {
+          jdText = job.description;
+        } else if (job) {
+          // Build a synthetic JD from available metadata + raw_data
+          const parts: string[] = [];
+          if (job.title) parts.push(`Job Title: ${job.title}`);
+          if (job.company_name) parts.push(`Company: ${job.company_name}`);
+          if (job.location_raw) parts.push(`Location: ${job.location_raw}`);
+          if (job.employment_type) parts.push(`Employment Type: ${job.employment_type}`);
+          if (job.seniority_level) parts.push(`Seniority: ${job.seniority_level}`);
+          if (job.functions?.length) parts.push(`Functions: ${job.functions.join(", ")}`);
+          // Check raw_data for any description-like fields
+          const rd = job.raw_data as Record<string, any> | null;
+          if (rd?.description) parts.push(`Description: ${rd.description}`);
+          if (rd?.descriptionHtml) {
+            // Strip HTML tags for plain text
+            const plain = rd.descriptionHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            if (plain.length > 50) parts.push(`Description: ${plain}`);
+          }
+          if (rd?.requirements) parts.push(`Requirements: ${rd.requirements}`);
+          if (rd?.qualifications) parts.push(`Qualifications: ${rd.qualifications}`);
+          
+          if (parts.length > 2) {
+            jdText = parts.join("\n");
+          }
+        }
       }
 
       if (!jdText) {
-        return res.status(400).json({ error: "Provide 'text' or 'job_id'" });
+        return res.status(400).json({ error: job_id ? "This job has no description data. Please paste the JD text manually instead." : "Provide 'text' or 'job_id'" });
       }
 
       if (!OPENAI_API_KEY) {
