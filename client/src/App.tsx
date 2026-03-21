@@ -13,6 +13,7 @@ import Jobs from "@/pages/jobs";
 import Companies from "@/pages/companies";
 import People from "@/pages/people";
 import Pipelines from "@/pages/pipelines";
+import Schedules from "@/pages/schedules";
 import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
 import Taxonomy from "@/pages/taxonomy";
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />
       <Route path="/pipelines" component={Pipelines} />
+      <Route path="/schedules" component={Schedules} />
       <Route path="/monitoring" component={Monitoring} />
       <Route path="/settings" component={Settings} />
       <Route path="/taxonomy" component={Taxonomy} />

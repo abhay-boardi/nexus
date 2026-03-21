@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
+import { CronExpressionParser } from "cron-parser";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!;
@@ -12,6 +13,7 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const JWT_SECRET = process.env.JWT_SECRET || "nexus-survey-secret-change-me";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const CRON_SECRET = process.env.CRON_SECRET || "";
 
 // Supabase client using anon key (for auth verification)
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
@@ -54,6 +56,148 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return await handleSurveyRoutes(path, req, res);
     } catch (err: any) {
       console.error("Survey API Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
+
+  // ==================== SCHEDULER TICK (cron-secret auth, before main auth) ====================
+  if (path === "/scheduler/tick" && req.method === "POST") {
+    try {
+      // Verify CRON_SECRET via Authorization header or Vercel cron header
+      const authHeader = req.headers.authorization;
+      const vercelCronHeader = req.headers["x-vercel-cron"];
+      const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : null;
+
+      if (!CRON_SECRET) {
+        return res.status(500).json({ error: "CRON_SECRET not configured" });
+      }
+      if (bearerToken !== CRON_SECRET && vercelCronHeader !== CRON_SECRET) {
+        return res.status(401).json({ error: "Invalid cron secret" });
+      }
+
+      // Find all active schedules that are due
+      const { data: dueSchedules, error: fetchErr } = await supabase
+        .from("pipeline_schedules")
+        .select("*")
+        .eq("is_active", true)
+        .lte("next_run_at", new Date().toISOString())
+        .order("next_run_at", { ascending: true });
+
+      if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+
+      let triggered = 0;
+      let paused = 0;
+      let skipped = 0;
+
+      for (const schedule of dueSchedules || []) {
+        try {
+          // Check max_runs guard
+          if (schedule.max_runs && schedule.total_runs >= schedule.max_runs) {
+            await supabase.from("pipeline_schedules").update({ is_active: false }).eq("id", schedule.id);
+            paused++;
+            continue;
+          }
+
+          // Create pipeline run record (reuse same logic as POST /api/pipelines/run)
+          let providerRunId: string | null = null;
+          let providerDatasetId: string | null = null;
+
+          if (schedule.pipeline_type === "linkedin_jobs" && APIFY_API_KEY) {
+            const timePostedMap: Record<string, string> = {
+              "past_24h": "r86400", "24hr": "r86400",
+              "past_week": "r604800", "past week": "r604800",
+              "past_month": "r2592000", "past month": "r2592000",
+            };
+            const cfg = schedule.config as any;
+            const actorInput: Record<string, any> = {
+              keywords: cfg?.search_keywords || cfg?.keywords || "software engineer",
+              location: cfg?.location || "India",
+              maxPages: Math.ceil((parseInt(cfg?.limit) || 100) / 10),
+            };
+            if (cfg?.date_posted && timePostedMap[cfg.date_posted]) {
+              actorInput.timePosted = timePostedMap[cfg.date_posted];
+            }
+            const startRes = await fetch(
+              `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
+              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+            );
+            if (startRes.ok) {
+              const apifyData = await startRes.json();
+              providerRunId = apifyData.data?.id;
+              providerDatasetId = apifyData.data?.defaultDatasetId;
+            }
+          }
+
+          if (schedule.pipeline_type === "alumni" && APIFY_API_KEY) {
+            const cfg = schedule.config as any;
+            const actorInput: Record<string, any> = {
+              schoolUrls: (cfg?.university_slug || "iit-bombay").split(",").map((s: string) => s.trim()),
+              profileScraperMode: "Full",
+              startPage: 1,
+              takePages: parseInt(cfg?.pages) || 5,
+            };
+            if (cfg?.keywords) actorInput.searchQuery = cfg.keywords;
+            if (cfg?.location) actorInput.locations = [cfg.location];
+            if (cfg?.job_title) actorInput.currentJobTitles = [cfg.job_title];
+            const startRes = await fetch(
+              `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,
+              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+            );
+            if (startRes.ok) {
+              const apifyData = await startRes.json();
+              providerRunId = apifyData.data?.id;
+              providerDatasetId = apifyData.data?.defaultDatasetId;
+            }
+          }
+
+          const { data: run, error: runErr } = await supabase
+            .from("pipeline_runs")
+            .insert({
+              pipeline_type: schedule.pipeline_type,
+              trigger_type: "scheduled",
+              config: { ...(schedule.config as any || {}), _provider_run_id: providerRunId, _provider_dataset_id: providerDatasetId },
+              status: "running",
+              started_at: new Date().toISOString(),
+              triggered_by: `schedule:${schedule.id}`,
+              schedule_id: schedule.id,
+            })
+            .select()
+            .single();
+
+          if (runErr) {
+            console.error(`Scheduler: failed to create run for schedule ${schedule.id}:`, runErr.message);
+            skipped++;
+            continue;
+          }
+
+          // Execute synchronous pipelines
+          const syncTypes = ["google_jobs", "company_enrichment", "jd_enrichment", "people_enrichment"];
+          if (syncTypes.includes(schedule.pipeline_type)) {
+            await executePipeline(run.id, schedule.pipeline_type, schedule.config as any || {}).catch(console.error);
+          }
+
+          // Update schedule
+          const nextRunAt = calculateNextRun(schedule.frequency, schedule.cron_expression);
+          const { data: updatedRun } = await supabase.from("pipeline_runs").select("status").eq("id", run.id).single();
+
+          await supabase.from("pipeline_schedules").update({
+            last_run_at: new Date().toISOString(),
+            last_run_status: updatedRun?.status || "running",
+            total_runs: (schedule.total_runs || 0) + 1,
+            next_run_at: nextRunAt,
+            updated_at: new Date().toISOString(),
+          }).eq("id", schedule.id);
+
+          triggered++;
+        } catch (schedErr: any) {
+          console.error(`Scheduler: error processing schedule ${schedule.id}:`, schedErr.message);
+          skipped++;
+        }
+      }
+
+      return res.json({ triggered, paused, skipped });
+    } catch (err: any) {
+      console.error("Scheduler Tick Error:", err);
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -714,11 +858,164 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json(data || []);
     }
 
+    // ==================== SCHEDULES ====================
+    const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "people_enrichment"];
+    const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "custom"];
+
+    if (path.match(/^\/schedules\/?$/) && req.method === "GET") {
+      const { data, error } = await supabase
+        .from("pipeline_schedules")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data || []);
+    }
+
+    if (path.match(/^\/schedules\/?$/) && req.method === "POST") {
+      const { name, pipeline_type, config, frequency, cron_expression, max_runs, credit_limit } = req.body || {};
+      if (!name) return res.status(400).json({ error: "name is required" });
+      if (!pipeline_type || !VALID_PIPELINE_TYPES.includes(pipeline_type)) {
+        return res.status(400).json({ error: `pipeline_type must be one of: ${VALID_PIPELINE_TYPES.join(", ")}` });
+      }
+      if (!frequency || !VALID_FREQUENCIES.includes(frequency)) {
+        return res.status(400).json({ error: `frequency must be one of: ${VALID_FREQUENCIES.join(", ")}` });
+      }
+      if (frequency === "custom" && cron_expression) {
+        try { CronExpressionParser.parse(cron_expression); } catch {
+          return res.status(400).json({ error: "Invalid cron expression" });
+        }
+      }
+      const nextRunAt = calculateNextRun(frequency, cron_expression);
+      const { data, error } = await supabase
+        .from("pipeline_schedules")
+        .insert({
+          name,
+          pipeline_type,
+          config: config || {},
+          frequency,
+          cron_expression: frequency === "custom" ? cron_expression : null,
+          max_runs: max_runs || null,
+          credit_limit: credit_limit || null,
+          next_run_at: nextRunAt,
+          created_by: auth.email,
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.status(201).json(data);
+    }
+
+    if (path.match(/^\/schedules\/[^/]+$/) && req.method === "PUT") {
+      const id = path.split("/").pop();
+      const { name, config, frequency, cron_expression, max_runs, credit_limit } = req.body || {};
+      if (frequency && !VALID_FREQUENCIES.includes(frequency)) {
+        return res.status(400).json({ error: `frequency must be one of: ${VALID_FREQUENCIES.join(", ")}` });
+      }
+      if (frequency === "custom" && cron_expression) {
+        try { CronExpressionParser.parse(cron_expression); } catch {
+          return res.status(400).json({ error: "Invalid cron expression" });
+        }
+      }
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updates.name = name;
+      if (config !== undefined) updates.config = config;
+      if (frequency !== undefined) updates.frequency = frequency;
+      if (frequency !== undefined || cron_expression !== undefined) {
+        updates.cron_expression = (frequency || "custom") === "custom" ? cron_expression : null;
+        updates.next_run_at = calculateNextRun(frequency || "daily", cron_expression);
+      }
+      if (max_runs !== undefined) updates.max_runs = max_runs;
+      if (credit_limit !== undefined) updates.credit_limit = credit_limit;
+
+      const { data, error } = await supabase
+        .from("pipeline_schedules")
+        .update(updates)
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    if (path.match(/^\/schedules\/[^/]+\/pause$/) && req.method === "POST") {
+      const id = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("pipeline_schedules")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    if (path.match(/^\/schedules\/[^/]+\/resume$/) && req.method === "POST") {
+      const id = path.split("/")[2];
+      // Get schedule to recalculate next_run_at
+      const { data: schedule } = await supabase.from("pipeline_schedules").select("*").eq("id", id).single();
+      if (!schedule) return res.status(404).json({ error: "Schedule not found" });
+      const nextRunAt = calculateNextRun(schedule.frequency, schedule.cron_expression);
+      const { data, error } = await supabase
+        .from("pipeline_schedules")
+        .update({ is_active: true, next_run_at: nextRunAt, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    if (path.match(/^\/schedules\/[^/]+$/) && req.method === "DELETE") {
+      const id = path.split("/").pop();
+      // Unlink pipeline_runs from this schedule
+      await supabase.from("pipeline_runs").update({ schedule_id: null }).eq("schedule_id", id);
+      const { error } = await supabase.from("pipeline_schedules").delete().eq("id", id);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ success: true });
+    }
+
+    if (path.match(/^\/schedules\/[^/]+\/runs$/) && req.method === "GET") {
+      const id = path.split("/")[2];
+      const limit = req.query?.limit || "20";
+      const offset = req.query?.offset || "0";
+      const { data, error, count } = await supabase
+        .from("pipeline_runs")
+        .select("*", { count: "exact" })
+        .eq("schedule_id", id)
+        .order("created_at", { ascending: false })
+        .range(parseInt(offset as string), parseInt(offset as string) + parseInt(limit as string) - 1);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ data: data || [], total: count || 0 });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
     return res.status(500).json({ error: err.message || "Internal server error" });
   }
+}
+
+// ==================== SCHEDULER HELPERS ====================
+
+function calculateNextRun(frequency: string, cronExpression?: string | null, from?: Date): string {
+  const now = from || new Date();
+  if (frequency === "custom" && cronExpression) {
+    try {
+      const interval = CronExpressionParser.parse(cronExpression, { currentDate: now });
+      return interval.next().toISOString();
+    } catch {
+      // Fallback to daily if cron parse fails
+      return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    }
+  }
+  const intervals: Record<string, number> = {
+    hourly: 60 * 60 * 1000,
+    every_6h: 6 * 60 * 60 * 1000,
+    daily: 24 * 60 * 60 * 1000,
+    weekly: 7 * 24 * 60 * 60 * 1000,
+  };
+  const ms = intervals[frequency] || intervals.daily;
+  return new Date(now.getTime() + ms).toISOString();
 }
 
 // ==================== PIPELINE EXECUTION ====================
