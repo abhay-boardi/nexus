@@ -17,6 +17,7 @@ import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
 import Taxonomy from "@/pages/taxonomy";
 import JDAnalyzer from "@/pages/jd-analyzer";
+import UploadPage from "@/pages/upload";
 import Login from "@/pages/login";
 import { Loader2 } from "lucide-react";
 
@@ -27,6 +28,7 @@ function AppRouter() {
       <Route path="/jobs" component={Jobs} />
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />
+      <Route path="/upload" component={UploadPage} />
       <Route path="/pipelines" component={Pipelines} />
       <Route path="/monitoring" component={Monitoring} />
       <Route path="/settings" component={Settings} />

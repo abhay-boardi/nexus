@@ -5,7 +5,7 @@ export const jobSourceEnum = ["linkedin", "google_jobs", "indeed", "naukri", "ot
 export const employmentTypeEnum = ["full_time", "part_time", "internship", "contract", "temporary", "volunteer", "other"] as const;
 export const seniorityLevelEnum = ["internship", "entry_level", "associate", "mid_senior", "director", "vp", "c_suite", "other"] as const;
 export const enrichmentStatusEnum = ["pending", "partial", "complete", "failed"] as const;
-export const pipelineTypeEnum = ["linkedin_jobs", "google_jobs", "jd_enrichment", "company_enrichment", "people_enrichment", "alumni", "hiring_manager"] as const;
+export const pipelineTypeEnum = ["linkedin_jobs", "google_jobs", "jd_enrichment", "company_enrichment", "people_enrichment", "alumni", "hiring_manager", "csv_upload"] as const;
 export const triggerTypeEnum = ["manual", "scheduled", "api"] as const;
 export const pipelineStatusEnum = ["pending", "running", "completed", "failed", "cancelled"] as const;
 export const enrichmentLogStatusEnum = ["success", "failed", "rate_limited", "no_data"] as const;
@@ -208,6 +208,21 @@ export interface DashboardStats {
   active_pipelines: number;
   pending_queue: number;
   failed_queue: number;
+}
+
+export interface CsvUpload {
+  id: string;
+  filename: string;
+  source_type: string;
+  total_rows: number;
+  processed_rows: number;
+  skipped_rows: number;
+  failed_rows: number;
+  error_log: Array<{ row_index: number; error: string; raw?: Record<string, unknown> }>;
+  status: "processing" | "completed" | "failed";
+  uploaded_by: string | null;
+  created_at: string;
+  completed_at: string | null;
 }
 
 // Zod schemas for pipeline run creation

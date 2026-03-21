@@ -1,14 +1,180 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { authFetch } from "@/lib/queryClient";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { authFetch, apiRequest } from "@/lib/queryClient";
 import { PipelineTrigger } from "@/components/pipeline-trigger";
 import { DataTable } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
-import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
+
+const COUNTRIES = [
+  { value: "", label: "Any Country" },
+  { value: "IN", label: "India" },
+  { value: "AE", label: "UAE" },
+  { value: "US", label: "United States" },
+  { value: "GB", label: "United Kingdom" },
+  { value: "SG", label: "Singapore" },
+  { value: "AU", label: "Australia" },
+  { value: "CA", label: "Canada" },
+];
+
+const EMPLOYMENT_TYPES = [
+  { value: "FULLTIME", label: "Full Time" },
+  { value: "PARTTIME", label: "Part Time" },
+  { value: "INTERN", label: "Internship" },
+  { value: "CONTRACTOR", label: "Contract" },
+];
+
+function GoogleJobsPipelineTrigger() {
+  const [queries, setQueries] = useState("Financial Analyst jobs in Dubai");
+  const [country, setCountry] = useState("");
+  const [pagesPerQuery, setPagesPerQuery] = useState("3");
+  const [datePosted, setDatePosted] = useState("week");
+  const [employmentTypes, setEmploymentTypes] = useState<string[]>([]);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const toggleEmploymentType = (type: string) => {
+    setEmploymentTypes(prev =>
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+    );
+  };
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const queryList = queries.split("\n").map(q => q.trim()).filter(Boolean);
+      if (queryList.length === 0) throw new Error("At least one query is required");
+
+      const res = await apiRequest("POST", "/api/pipelines/run", {
+        pipeline_type: "google_jobs",
+        config: {
+          queries: queryList,
+          country: country || undefined,
+          pages_per_query: parseInt(pagesPerQuery) || 3,
+          date_posted: datePosted,
+          employment_type: employmentTypes.length > 0 ? employmentTypes : undefined,
+        },
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Pipeline started", description: "Google Jobs pipeline has been triggered." });
+      queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/pipeline-activity"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to start pipeline", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid="pipeline-trigger-google_jobs">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <div className="rounded-lg bg-primary/10 p-2">
+            <Search className="h-4 w-4 text-primary" />
+          </div>
+          <div>
+            <CardTitle className="text-sm">Google Jobs</CardTitle>
+            <p className="text-xs text-muted-foreground">Search jobs via Google Jobs API (enhanced)</p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <Label className="text-xs">Search Queries (one per line)</Label>
+          <Textarea
+            className="text-xs min-h-[80px]"
+            placeholder={"Financial Analyst jobs in Dubai\nData Analyst jobs in Mumbai\nInvestment Banking Analyst India"}
+            value={queries}
+            onChange={(e) => setQueries(e.target.value)}
+            data-testid="field-queries"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Country</Label>
+            <Select value={country} onValueChange={setCountry}>
+              <SelectTrigger className="h-8 text-xs" data-testid="field-country">
+                <SelectValue placeholder="Any Country" />
+              </SelectTrigger>
+              <SelectContent>
+                {COUNTRIES.map(c => (
+                  <SelectItem key={c.value} value={c.value || "any"}>{c.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Pages per Query</Label>
+            <Input
+              type="number"
+              className="h-8 text-xs"
+              value={pagesPerQuery}
+              onChange={(e) => setPagesPerQuery(e.target.value)}
+              min={1}
+              max={10}
+              data-testid="field-pages_per_query"
+            />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Date Posted</Label>
+          <Select value={datePosted} onValueChange={setDatePosted}>
+            <SelectTrigger className="h-8 text-xs" data-testid="field-date_posted">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any Time</SelectItem>
+              <SelectItem value="today">Today</SelectItem>
+              <SelectItem value="3days">Past 3 Days</SelectItem>
+              <SelectItem value="week">Past Week</SelectItem>
+              <SelectItem value="month">Past Month</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Employment Type</Label>
+          <div className="flex flex-wrap gap-3">
+            {EMPLOYMENT_TYPES.map(et => (
+              <div key={et.value} className="flex items-center gap-1.5">
+                <Checkbox
+                  id={`et-${et.value}`}
+                  checked={employmentTypes.includes(et.value)}
+                  onCheckedChange={() => toggleEmploymentType(et.value)}
+                />
+                <Label htmlFor={`et-${et.value}`} className="text-xs cursor-pointer">{et.label}</Label>
+              </div>
+            ))}
+          </div>
+        </div>
+        <Button
+          className="w-full h-8 text-xs"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending}
+          data-testid="run-google_jobs"
+        >
+          {mutation.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : (
+            <Play className="h-3 w-3 mr-1" />
+          )}
+          Run Pipeline
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Pipelines() {
   const [selected, setSelected] = useState<PipelineRun | null>(null);
@@ -64,24 +230,7 @@ export default function Pipelines() {
               { name: "limit", label: "Limit", type: "number", placeholder: "100", defaultValue: "100" },
             ]}
           />
-          <PipelineTrigger
-            type="google_jobs"
-            title="Google Jobs"
-            description="Search jobs via Google Jobs API"
-            icon={Search}
-            fields={[
-              { name: "query", label: "Search Query", type: "text", placeholder: "e.g. data analyst in Mumbai" },
-              { name: "location", label: "Location", type: "text", placeholder: "e.g. Mumbai, India" },
-              { name: "date_posted", label: "Date Posted", type: "select", options: [
-                { value: "all", label: "Any Time" },
-                { value: "today", label: "Today" },
-                { value: "3days", label: "Past 3 Days" },
-                { value: "week", label: "Past Week" },
-                { value: "month", label: "Past Month" },
-              ], defaultValue: "month" },
-              { name: "num_pages", label: "Pages", type: "number", placeholder: "1", defaultValue: "1" },
-            ]}
-          />
+          <GoogleJobsPipelineTrigger />
           <PipelineTrigger
             type="company_enrichment"
             title="Company Enrichment"
