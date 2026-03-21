@@ -2085,6 +2085,39 @@ async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelR
     return res.json({ token, respondent_id: respondent.id });
   }
 
+  // ---- POST /api/survey/auth/register ----
+  // Called after Supabase Auth OTP verification succeeds on the frontend.
+  // Creates/upserts a survey_respondents record and issues a survey JWT.
+  if (path === "/survey/auth/register" && req.method === "POST") {
+    const { email } = req.body || {};
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ error: "Email is required" });
+    }
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Upsert respondent (create if first time, update last_login if returning)
+    const { data: respondent, error } = await supabase
+      .from("survey_respondents")
+      .upsert(
+        { email: normalizedEmail, last_login_at: new Date().toISOString() },
+        { onConflict: "email" }
+      )
+      .select("id")
+      .single();
+
+    if (error || !respondent) {
+      return res.status(500).json({ error: error?.message || "Failed to register respondent" });
+    }
+
+    const token = jwt.sign(
+      { respondent_id: respondent.id, email: normalizedEmail },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    return res.json({ token, respondent_id: respondent.id });
+  }
+
   // ---- GET /api/survey/skill-list (public) ----
   if (path === "/survey/skill-list" && req.method === "GET") {
     const { data: skills, error } = await supabase

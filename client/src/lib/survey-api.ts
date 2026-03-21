@@ -1,3 +1,5 @@
+import { supabase } from "@/lib/supabase";
+
 const API_BASE = "";
 
 function getSurveyToken(): string | null {
@@ -31,22 +33,32 @@ async function surveyFetch(url: string, init?: RequestInit): Promise<Response> {
 }
 
 export async function sendOtp(email: string) {
-  const res = await surveyFetch("/api/survey/auth/send-otp", {
-    method: "POST",
-    body: JSON.stringify({ email }),
+  // Use Supabase Auth to send OTP — it handles email delivery reliably
+  const { error } = await supabase.auth.signInWithOtp({
+    email: email.toLowerCase().trim(),
+    options: { shouldCreateUser: true },
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to send OTP");
-  return data;
+  if (error) throw new Error(error.message);
+  return { message: "OTP sent to your email" };
 }
 
 export async function verifyOtp(email: string, otp: string) {
-  const res = await surveyFetch("/api/survey/auth/verify-otp", {
+  // Verify via Supabase Auth
+  const { error: verifyError } = await supabase.auth.verifyOtp({
+    email: email.toLowerCase().trim(),
+    token: otp,
+    type: "email",
+  });
+  if (verifyError) throw new Error(verifyError.message);
+
+  // Now call our backend to create/update survey respondent and get survey JWT
+  const res = await fetch(`${API_BASE}/api/survey/auth/register`, {
     method: "POST",
-    body: JSON.stringify({ email, otp }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: email.toLowerCase().trim() }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Verification failed");
+  if (!res.ok) throw new Error(data.error || "Failed to register survey session");
   return data as { token: string; respondent_id: string };
 }
 
