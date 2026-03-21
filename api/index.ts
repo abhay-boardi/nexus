@@ -2017,7 +2017,7 @@ async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelR
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            from: "Nexus Survey <noreply@boardinfinity.com>",
+            from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
             to: [normalizedEmail],
             subject: "Your Nexus Survey Access Code",
             text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
