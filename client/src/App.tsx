@@ -21,6 +21,7 @@ import JDAnalyzer from "@/pages/jd-analyzer";
 import UploadPage from "@/pages/upload";
 import Analytics from "@/pages/analytics";
 import SurveyAdmin from "@/pages/survey-admin";
+import Reports from "@/pages/reports";
 import Login from "@/pages/login";
 import DataQuality from "@/pages/data-quality";
 import SurveyLanding from "@/pages/survey-landing";
@@ -44,6 +45,7 @@ function AppRouter() {
       <Route path="/taxonomy" component={Taxonomy} />
       <Route path="/jd-analyzer" component={JDAnalyzer} />
       <Route path="/survey-admin" component={SurveyAdmin} />
+      <Route path="/reports" component={Reports} />
       <Route component={NotFound} />
     </Switch>
   );

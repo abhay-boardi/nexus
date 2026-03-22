@@ -1869,10 +1869,381 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    // ==================== REPORTS ROUTES ====================
+
+    // POST /api/reports — create report record
+    if (path === "/reports" && req.method === "POST") {
+      const { title, source_org, report_year, report_type, region, file_url, file_type, file_size_bytes } = req.body || {};
+      if (!title || !file_url) {
+        return res.status(400).json({ error: "title and file_url are required" });
+      }
+      const { data, error } = await supabase
+        .from("secondary_reports")
+        .insert({
+          title,
+          source_org: source_org || null,
+          report_year: report_year || null,
+          report_type: report_type || null,
+          region: region || null,
+          file_url,
+          file_type: file_type || null,
+          file_size_bytes: file_size_bytes || null,
+          uploaded_by: auth.email,
+          processing_status: "pending",
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // GET /api/reports — list reports
+    if (path === "/reports" && req.method === "GET") {
+      const { search, status, report_type, region, page = "1", limit = "20" } = req.query as Record<string, string>;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let query = supabase
+        .from("secondary_reports")
+        .select("*", { count: "exact" });
+
+      if (search) query = query.or(`title.ilike.%${search}%,source_org.ilike.%${search}%`);
+      if (status && status !== "all") query = query.eq("processing_status", status);
+      if (report_type && report_type !== "all") query = query.eq("report_type", report_type);
+      if (region && region !== "all") query = query.eq("region", region);
+
+      const { data, error, count } = await query
+        .order("created_at", { ascending: false })
+        .range(offset, offset + parseInt(limit) - 1);
+
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Get skill mention counts for each report
+      const reportIds = (data || []).map((r: any) => r.id);
+      let skillCounts: Record<string, number> = {};
+      if (reportIds.length > 0) {
+        const { data: counts } = await supabase
+          .from("report_skill_mentions")
+          .select("report_id")
+          .in("report_id", reportIds);
+        for (const row of counts || []) {
+          skillCounts[row.report_id] = (skillCounts[row.report_id] || 0) + 1;
+        }
+      }
+
+      const enriched = (data || []).map((r: any) => ({
+        ...r,
+        skill_count: skillCounts[r.id] || 0,
+      }));
+
+      return res.json({ data: enriched, total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
+    // GET /api/reports/:id — single report detail
+    if (path.match(/^\/reports\/[^/]+$/) && !path.includes("/skills") && req.method === "GET") {
+      const id = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("secondary_reports")
+        .select("*")
+        .eq("id", id)
+        .single();
+      if (error) return res.status(404).json({ error: "Report not found" });
+      return res.json(data);
+    }
+
+    // GET /api/reports/:id/skills — skill mentions for a report
+    if (path.match(/^\/reports\/[^/]+\/skills$/) && req.method === "GET") {
+      const id = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("report_skill_mentions")
+        .select("*")
+        .eq("report_id", id)
+        .order("ranking", { ascending: true, nullsFirst: false });
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data || []);
+    }
+
+    // DELETE /api/reports/:id — delete report
+    if (path.match(/^\/reports\/[^/]+$/) && req.method === "DELETE") {
+      const id = path.split("/")[2];
+      const { error } = await supabase
+        .from("secondary_reports")
+        .delete()
+        .eq("id", id);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ success: true });
+    }
+
+    // POST /api/reports/:id/process — trigger AI processing
+    if (path.match(/^\/reports\/[^/]+\/process$/) && req.method === "POST") {
+      const id = path.split("/")[2];
+
+      // Get the report
+      const { data: report, error: fetchErr } = await supabase
+        .from("secondary_reports")
+        .select("*")
+        .eq("id", id)
+        .single();
+      if (fetchErr || !report) return res.status(404).json({ error: "Report not found" });
+      if (report.processing_status === "completed") return res.status(400).json({ error: "Report already processed" });
+
+      // Mark as processing
+      await supabase.from("secondary_reports").update({ processing_status: "processing", error_message: null }).eq("id", id);
+
+      try {
+        // Download file
+        const fileResponse = await fetch(report.file_url);
+        if (!fileResponse.ok) throw new Error("Failed to download file from storage");
+        const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+
+        // Extract text
+        let fullText = "";
+        if (report.file_type === "pdf") {
+          const pdfParse = require("pdf-parse");
+          const pdf = await pdfParse(fileBuffer);
+          fullText = pdf.text;
+        } else if (report.file_type === "docx") {
+          const mammoth = require("mammoth");
+          const result = await mammoth.extractRawText({ buffer: fileBuffer });
+          fullText = result.value;
+        } else {
+          throw new Error("Unsupported file type: " + report.file_type);
+        }
+
+        // Chunk text
+        const chunks = chunkText(fullText, 80000);
+        await supabase.from("secondary_reports").update({ total_chunks: chunks.length, processed_chunks: 0 }).eq("id", id);
+
+        // Process each chunk with GPT
+        const allResults: any[] = [];
+        for (let i = 0; i < chunks.length; i++) {
+          const chunkResult = await processReportChunk(
+            chunks[i],
+            report.title,
+            report.source_org || "Unknown",
+            report.report_year || 0,
+            report.region || "Global",
+            i + 1,
+            chunks.length
+          );
+          allResults.push(chunkResult);
+
+          // Update progress
+          await supabase.from("secondary_reports").update({ processed_chunks: i + 1 }).eq("id", id);
+        }
+
+        // Merge results from all chunks
+        const mergedFindings: any[] = [];
+        const mergedSkills: any[] = [];
+        const mergedTables: any[] = [];
+        const mergedStats: any[] = [];
+        const summaryParts: string[] = [];
+
+        for (const result of allResults) {
+          if (result.section_summary) summaryParts.push(result.section_summary);
+          if (result.key_findings) mergedFindings.push(...result.key_findings);
+          if (result.skill_mentions) mergedSkills.push(...result.skill_mentions);
+          if (result.extracted_tables) mergedTables.push(...result.extracted_tables);
+          if (result.stats) mergedStats.push(...result.stats);
+        }
+
+        // Deduplicate skills by name — keep the one with more data
+        const skillMap = new Map<string, any>();
+        for (const skill of mergedSkills) {
+          const key = skill.skill_name?.toLowerCase();
+          if (!key) continue;
+          const existing = skillMap.get(key);
+          if (!existing || (skill.data_point && !existing.data_point) || (skill.ranking && !existing.ranking)) {
+            skillMap.set(key, skill);
+          }
+        }
+        const dedupedSkills = Array.from(skillMap.values());
+
+        // Generate overall summary if multiple chunks
+        let summary = summaryParts.join(" ");
+        if (summaryParts.length > 1 && OPENAI_API_KEY) {
+          try {
+            const summaryResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
+              body: JSON.stringify({
+                model: "gpt-4o-mini",
+                messages: [
+                  { role: "system", content: "Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences)." },
+                  { role: "user", content: summaryParts.join("\n\n") },
+                ],
+                temperature: 0.3,
+                max_tokens: 500,
+              }),
+            });
+            const summaryData = await summaryResponse.json();
+            summary = summaryData.choices?.[0]?.message?.content || summary;
+          } catch {
+            // Keep concatenated summary
+          }
+        }
+
+        // Match skills against taxonomy
+        const skillMentionsToInsert: any[] = [];
+        for (const skill of dedupedSkills) {
+          let taxonomySkillId: string | null = null;
+
+          // Exact match
+          const { data: exactMatch } = await supabase
+            .from("taxonomy_skills")
+            .select("id")
+            .ilike("name", skill.skill_name)
+            .limit(1)
+            .maybeSingle();
+
+          if (exactMatch) {
+            taxonomySkillId = exactMatch.id;
+          } else {
+            // Fuzzy match
+            try {
+              const { data: fuzzyMatch } = await supabase
+                .rpc("find_similar_skill", { search_term: skill.skill_name })
+                .limit(1)
+                .maybeSingle();
+              if ((fuzzyMatch as any)?.id) {
+                taxonomySkillId = (fuzzyMatch as any).id;
+              }
+            } catch {
+              // RPC may not exist
+            }
+          }
+
+          skillMentionsToInsert.push({
+            report_id: id,
+            taxonomy_skill_id: taxonomySkillId,
+            skill_name: skill.skill_name,
+            mention_context: skill.mention_context || null,
+            ranking: skill.ranking || null,
+            growth_indicator: skill.growth_indicator || null,
+            data_point: skill.data_point || null,
+          });
+        }
+
+        // Insert skill mentions
+        if (skillMentionsToInsert.length > 0) {
+          // Delete existing mentions first (in case of reprocessing)
+          await supabase.from("report_skill_mentions").delete().eq("report_id", id);
+          // Insert in batches of 50
+          for (let i = 0; i < skillMentionsToInsert.length; i += 50) {
+            await supabase.from("report_skill_mentions").insert(skillMentionsToInsert.slice(i, i + 50));
+          }
+        }
+
+        // Update report with results
+        await supabase.from("secondary_reports").update({
+          summary,
+          key_findings: mergedFindings,
+          extracted_data: { tables: mergedTables, stats: mergedStats },
+          processing_status: "completed",
+          processed_at: new Date().toISOString(),
+        }).eq("id", id);
+
+        return res.json({
+          success: true,
+          chunks_processed: chunks.length,
+          skills_extracted: dedupedSkills.length,
+          findings_count: mergedFindings.length,
+        });
+      } catch (err: any) {
+        console.error("Report processing error:", err);
+        await supabase.from("secondary_reports").update({
+          processing_status: "error",
+          error_message: err.message || "Processing failed",
+        }).eq("id", id);
+        return res.status(500).json({ error: err.message || "Processing failed" });
+      }
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
     return res.status(500).json({ error: err.message || "Internal server error" });
+  }
+}
+
+// ==================== REPORT PROCESSING HELPERS ====================
+
+function chunkText(text: string, maxChars: number = 80000): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + maxChars, text.length);
+    // Try to break at a paragraph boundary
+    if (end < text.length) {
+      const lastNewline = text.lastIndexOf("\n\n", end);
+      if (lastNewline > start + maxChars * 0.5) end = lastNewline;
+    }
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+async function processReportChunk(
+  text: string,
+  title: string,
+  sourceOrg: string,
+  year: number,
+  region: string,
+  chunkNum: number,
+  totalChunks: number
+): Promise<any> {
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not configured");
+
+  // Truncate text to fit within GPT context limits (~80K chars ≈ 20K tokens)
+  const truncatedText = text.slice(0, 80000);
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are an expert analyst processing a section of an industry/skills report.
+Extract structured information. Return valid JSON only.
+
+{
+  "section_summary": "Brief summary of this section (2-3 sentences)",
+  "key_findings": [
+    {"finding": "string", "category": "skills|labor_market|technology|salary|education|regional", "confidence": 0.0-1.0}
+  ],
+  "skill_mentions": [
+    {"skill_name": "string", "mention_context": "verbatim sentence", "ranking": null, "growth_indicator": "growing|declining|stable|emerging|null", "data_point": "string|null"}
+  ],
+  "extracted_tables": [
+    {"title": "string", "rows": [{"label": "string", "value": "string"}]}
+  ],
+  "stats": [
+    {"metric": "string", "value": "string", "context": "string"}
+  ]
+}`,
+        },
+        {
+          role: "user",
+          content: `Report: ${title} by ${sourceOrg} (${year}) — Region: ${region}\nSection ${chunkNum} of ${totalChunks}:\n"""\n${truncatedText}\n"""`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 4000,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "{}";
+  try {
+    return JSON.parse(content);
+  } catch {
+    return { section_summary: "", key_findings: [], skill_mentions: [], extracted_tables: [], stats: [] };
   }
 }
 
