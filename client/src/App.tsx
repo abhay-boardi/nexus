@@ -19,6 +19,7 @@ import Settings from "@/pages/settings";
 import Taxonomy from "@/pages/taxonomy";
 import JDAnalyzer from "@/pages/jd-analyzer";
 import UploadPage from "@/pages/upload";
+import Analytics from "@/pages/analytics";
 import Login from "@/pages/login";
 import SurveyLanding from "@/pages/survey-landing";
 import SurveyForm from "@/pages/survey-form";
@@ -29,6 +30,7 @@ function AppRouter() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/jobs" component={Jobs} />
+      <Route path="/analytics" component={Analytics} />
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />

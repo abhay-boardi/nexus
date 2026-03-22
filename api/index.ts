@@ -988,6 +988,285 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ data: data || [], total: count || 0 });
     }
 
+    // ==================== ANALYTICS ====================
+
+    if (path === "/analytics/overview" && req.method === "GET") {
+      const { date_from, date_to } = req.query as Record<string, string>;
+
+      let jobsQuery = supabase.from("jobs").select("*", { count: "exact", head: true });
+      let jobsWithDescQuery = supabase.from("jobs").select("*", { count: "exact", head: true }).not("description", "is", null);
+      let jobsAnalyzedQuery = supabase.from("jobs").select("*", { count: "exact", head: true }).eq("enrichment_status", "complete");
+      let companiesQuery = supabase.from("companies").select("*", { count: "exact", head: true });
+      let peopleQuery = supabase.from("people").select("*", { count: "exact", head: true });
+      let alumniQuery = supabase.from("alumni").select("*", { count: "exact", head: true });
+      let skillsQuery = supabase.from("job_skills").select("skill_name");
+      let jobsPeriodQuery = supabase.from("jobs").select("*", { count: "exact", head: true });
+
+      if (date_from) {
+        jobsPeriodQuery = jobsPeriodQuery.gte("created_at", date_from);
+      }
+      if (date_to) {
+        jobsPeriodQuery = jobsPeriodQuery.lte("created_at", date_to);
+      }
+
+      const [
+        totalJobsRes,
+        jobsWithDescRes,
+        jobsAnalyzedRes,
+        companiesRes,
+        peopleRes,
+        alumniRes,
+        skillsRes,
+        jobsPeriodRes,
+      ] = await Promise.all([
+        jobsQuery,
+        jobsWithDescQuery,
+        jobsAnalyzedQuery,
+        companiesQuery,
+        peopleQuery,
+        alumniQuery,
+        skillsQuery,
+        jobsPeriodQuery,
+      ]);
+
+      const totalJobs = totalJobsRes.count || 0;
+      const jobsWithDesc = jobsWithDescRes.count || 0;
+      const jobsAnalyzed = jobsAnalyzedRes.count || 0;
+      const uniqueSkills = new Set((skillsRes.data || []).map((s: any) => s.skill_name)).size;
+
+      return res.json({
+        total_jobs: totalJobs,
+        jobs_with_descriptions: jobsWithDesc,
+        jobs_analyzed: jobsAnalyzed,
+        jd_coverage_pct: totalJobs > 0 ? Math.round((jobsWithDesc / totalJobs) * 1000) / 10 : 0,
+        skills_extracted: uniqueSkills,
+        total_companies: companiesRes.count || 0,
+        total_people: peopleRes.count || 0,
+        total_alumni: alumniRes.count || 0,
+        jobs_period: jobsPeriodRes.count || 0,
+        enrichment_complete_pct: totalJobs > 0 ? Math.round((jobsAnalyzed / totalJobs) * 1000) / 10 : 0,
+        training_data_ready: jobsAnalyzed,
+      });
+    }
+
+    if (path === "/analytics/jobs-by-source" && req.method === "GET") {
+      const { data, error } = await supabase.from("jobs").select("source");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const src = row.source || "unknown";
+        counts[src] = (counts[src] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([source, count]) => ({ source, count }))
+        .sort((a, b) => b.count - a.count);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/jobs-by-region" && req.method === "GET") {
+      const { data, error } = await supabase.from("jobs").select("location_country").not("location_country", "is", null);
+      if (error) return res.status(500).json({ error: error.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const country = row.location_country || "Unknown";
+        counts[country] = (counts[country] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([country, count]) => ({ country, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/jobs-by-role" && req.method === "GET") {
+      const { data, error } = await supabase.from("jobs").select("title").not("title", "is", null);
+      if (error) return res.status(500).json({ error: error.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const title = row.title || "Unknown";
+        counts[title] = (counts[title] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([title, count]) => ({ title, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 30);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/top-skills" && req.method === "GET") {
+      const limit = parseInt((req.query as Record<string, string>).limit || "20");
+      const { data, error } = await supabase.from("job_skills").select("skill_name");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const name = row.skill_name || "Unknown";
+        counts[name] = (counts[name] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([skill_name, count]) => ({ skill_name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, limit);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/recent-skills" && req.method === "GET") {
+      const days = parseInt((req.query as Record<string, string>).days || "30");
+      const since = new Date();
+      since.setDate(since.getDate() - days);
+
+      const { data: jobs, error: jobsErr } = await supabase
+        .from("jobs")
+        .select("id")
+        .gte("created_at", since.toISOString());
+      if (jobsErr) return res.status(500).json({ error: jobsErr.message });
+
+      const jobIds = (jobs || []).map((j: any) => j.id);
+      if (jobIds.length === 0) return res.json([]);
+
+      const { data: skills, error: skillsErr } = await supabase
+        .from("job_skills")
+        .select("skill_name")
+        .in("job_id", jobIds);
+      if (skillsErr) return res.status(500).json({ error: skillsErr.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of skills || []) {
+        const name = row.skill_name || "Unknown";
+        counts[name] = (counts[name] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([skill_name, count]) => ({ skill_name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 20);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/enrichment-funnel" && req.method === "GET") {
+      const { data, error } = await supabase.from("jobs").select("enrichment_status");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const status = row.enrichment_status || "pending";
+        counts[status] = (counts[status] || 0) + 1;
+      }
+      const result = Object.entries(counts)
+        .map(([status, count]) => ({ status, count }))
+        .sort((a, b) => b.count - a.count);
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/timeline" && req.method === "GET") {
+      const { granularity = "day", days = "30" } = req.query as Record<string, string>;
+      const since = new Date();
+      since.setDate(since.getDate() - parseInt(days));
+
+      const { data, error } = await supabase
+        .from("jobs")
+        .select("created_at")
+        .gte("created_at", since.toISOString())
+        .order("created_at", { ascending: true });
+      if (error) return res.status(500).json({ error: error.message });
+
+      const buckets: Record<string, number> = {};
+      for (const row of data || []) {
+        const d = new Date(row.created_at);
+        let key: string;
+        if (granularity === "week") {
+          const weekStart = new Date(d);
+          weekStart.setDate(d.getDate() - d.getDay());
+          key = weekStart.toISOString().split("T")[0];
+        } else {
+          key = d.toISOString().split("T")[0];
+        }
+        buckets[key] = (buckets[key] || 0) + 1;
+      }
+      const result = Object.entries(buckets)
+        .map(([date, count]) => ({ date, count }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/pipeline-health" && req.method === "GET") {
+      const since = new Date();
+      since.setDate(since.getDate() - 30);
+
+      const { data, error } = await supabase
+        .from("pipeline_runs")
+        .select("pipeline_type, status")
+        .gte("created_at", since.toISOString());
+      if (error) return res.status(500).json({ error: error.message });
+
+      const grouped: Record<string, Record<string, number>> = {};
+      for (const row of data || []) {
+        const ptype = row.pipeline_type || "unknown";
+        if (!grouped[ptype]) grouped[ptype] = {};
+        const st = row.status || "unknown";
+        grouped[ptype][st] = (grouped[ptype][st] || 0) + 1;
+      }
+      const result = Object.entries(grouped).map(([pipeline_type, statuses]) => ({
+        pipeline_type,
+        ...statuses,
+      }));
+
+      return res.json(result);
+    }
+
+    if (path === "/analytics/jobs-table" && req.method === "GET") {
+      const {
+        page = "1", limit = "50", search, source, status, country, sort = "created_at", order = "desc",
+      } = req.query as Record<string, string>;
+
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      let query = supabase
+        .from("jobs")
+        .select("id, title, company_name, location_country, location_city, source, enrichment_status, created_at, posted_at", { count: "exact" });
+
+      if (search) {
+        query = query.or(`title.ilike.%${search}%,company_name.ilike.%${search}%`);
+      }
+      if (source) query = query.eq("source", source);
+      if (status) query = query.eq("enrichment_status", status);
+      if (country) query = query.eq("location_country", country);
+
+      const ascending = order === "asc";
+      query = query.order(sort, { ascending }).range(offset, offset + parseInt(limit) - 1);
+
+      const { data, error, count } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Get skill counts for these jobs
+      const jobIds = (data || []).map((j: any) => j.id);
+      let skillCounts: Record<string, number> = {};
+      if (jobIds.length > 0) {
+        const { data: skills } = await supabase
+          .from("job_skills")
+          .select("job_id")
+          .in("job_id", jobIds);
+        for (const s of skills || []) {
+          skillCounts[s.job_id] = (skillCounts[s.job_id] || 0) + 1;
+        }
+      }
+
+      const enriched = (data || []).map((j: any) => ({
+        ...j,
+        skills_count: skillCounts[j.id] || 0,
+      }));
+
+      return res.json({ data: enriched, total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
