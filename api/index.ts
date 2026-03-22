@@ -2987,9 +2987,9 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
 
 // Apify actor IDs to try for LinkedIn profile scraping (in order of preference)
 const LINKEDIN_PROFILE_ACTORS = [
+  "harvestapi/linkedin-profile-scraper",
+  "dev_fusion/Linkedin-Profile-Scraper",
   "curious_coder/linkedin-profile-scraper",
-  "apify/linkedin-profile-scraper",
-  "hlearning/linkedin-profile-scraper",
 ];
 
 async function fetchLinkedInProfile(linkedinUrl: string): Promise<any> {
